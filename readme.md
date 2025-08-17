@@ -1,166 +1,158 @@
-# Microservice Design Document
+# Data Microservice – Architecture & Design
 
-## Objective
+## Overview
 
-Design a microservice that efficiently processes **billions of records** while meeting strict performance SLAs (P99 < 500ms). This document captures **architectural decisions, trade-offs, and deployment strategy**.
+This repository contains the design documentation of a **scalable and maintainable microservice** capable of handling **billions of records** with **P99 response times under 500ms**.  
 
----
-
-## Functional Requirements
-
-- **POST /data** – Accept and validate JSON payload, persist to DB  
-- **GET /data** – Retrieve data with sub-500ms latency  
-- **Scalability** – Billions of records with <10% degradation  
+The project emphasizes **design, architecture, and deployment strategy**. All technology choices are justified with trade-offs.
 
 ---
 
-## Architecture Overview
+## Features
 
-### High-Level Flow
-
-````
-
-Client → CloudFront → WAF → ALB → NGINX Ingress → API Pods → Service Layer → DB/Cache/Kafka
-
-```
-
-### Key Components
-
-1. **API Layer**
-   - Request parsing, validation (JSON schema)  
-   - Authentication & authorization  
-   - Response generation  
-
-2. **Service Layer**
-   - Encapsulates business logic  
-   - Manages caching (Redis)  
-   - Publishes async events to Kafka  
-
-3. **Data Layer**
-   - **PostgreSQL + TimescaleDB** for ACID + time-series workloads  
-   - **Redis Cluster** for caching hot data (5-min TTL)  
-   - **Kafka (MSK)** for event-driven processing  
+- **POST /data** – Accept JSON input, validate schema, persist into database  
+- **GET /data** – Retrieve and return stored records  
+- **Performance** – P99 < 500ms  
+- **Scalability** – Billions of rows with <10% degradation  
+- **Reliability** – Multi-AZ deployment with high availability guarantees  
 
 ---
 
-## Technology Trade-offs
+## System Architecture
 
-### Database
-- **PostgreSQL (chosen)**: ACID compliance, relational queries, mature ecosystem, partitioning (TimescaleDB).  
-- **MongoDB**: Flexible schema, but weaker consistency and slower for joins.  
-- **DynamoDB**: Fully managed and horizontally scalable, but expensive and eventually consistent.  
+The service is designed using a **layered architecture**.  
 
-**Why PostgreSQL?** We require **financial-grade consistency**, efficient queries, and ability to partition billions of rows while keeping operational complexity manageable.
+### High-Level System View
+![System Architecture](./architecture/system_architecture.png)
 
----
-
-### Message Broker
-- **Kafka (chosen)**: Designed for **high-throughput streaming** (2M msgs/sec), event replay, and durability.  
-- **RabbitMQ**: Simpler, great for traditional queues, but throughput peaks around 50k msgs/sec.  
-- **SQS**: Fully managed, low ops burden, but lacks streaming semantics and has higher latency.  
-
-**Why Kafka?** The system requires **both high throughput and event sourcing capabilities**.
+**Layers:**
+- **API Layer** – Handles requests, validation, and responses  
+- **Service Layer** – Encapsulates business logic and caching logic  
+- **Data Layer** – PostgreSQL (with TimescaleDB) for persistence, Redis for caching, Kafka for async processing  
 
 ---
 
-### Cache
-- **Redis (chosen)**: Sub-millisecond latency, advanced data types, persistence options.  
-- **Memcached**: Slightly faster for simple key-value lookups, but lacks persistence and clustering features.  
+## Request Flow
 
-**Why Redis?** It provides **rich functionality with minimal performance trade-offs**, suitable for caching and queue-like workloads.
+![Request Architecture](./architecture/request_architecture.png)
 
----
-
-### Orchestration
-- **Kubernetes (chosen)**: Standardized ecosystem, autoscaling, portability.  
-- **ECS**: Lower operational overhead on AWS, but vendor lock-in.  
-- **Nomad**: Flexible, simpler than Kubernetes, but lower adoption and ecosystem support.  
-
-**Why Kubernetes?** The **ecosystem maturity** and team experience outweighed ECS simplicity.
+**Typical flow:**
+1. Client request enters through **CloudFront** + **WAF**  
+2. Routed to **Application Load Balancer (ALB)**  
+3. Forwarded to **NGINX Ingress** inside EKS cluster  
+4. Request served by API Pod → Service Layer → Database/Cache  
+5. Async events published to **Kafka** for further processing  
 
 ---
 
-### Service Mesh
-- **Istio (chosen)**: mTLS, observability, advanced traffic control.  
-- **Linkerd**: Simpler, faster, but fewer features.  
+## Deployment Architecture
 
-**Why Istio?** We needed **observability + security out of the box**, and were willing to accept 1–2ms latency overhead.
+![Deployment Flow](./architecture/deploy_flow.png)
+
+- **AWS CloudFront + WAF** – global CDN and DDoS protection  
+- **ALB** – L7 load balancing with SSL termination and WebSocket support  
+- **EKS Cluster** – Kubernetes-managed workloads, running across 3 AZs  
+- **Managed Data Services** – RDS PostgreSQL, ElastiCache Redis, MSK (Kafka)  
+- **S3** – for backups, logs, and cold data  
 
 ---
 
-### Monitoring
-- **Prometheus (chosen)**: Open-source, cost-efficient, integrates with Grafana.  
-- **DataDog**: Rich UI and out-of-the-box integrations, but ~$750/month more expensive.  
-- **CloudWatch**: Fully managed but less flexible for custom metrics.  
+## Kubernetes Architecture
 
-**Why Prometheus?** At our scale, **cost optimization + flexibility** outweighed ease of use.
+![Kubernetes Architecture](./architecture/kubernets_architecture.png)
+
+- **Cluster**: EKS with 3 worker nodes (c5.2xlarge), one per AZ  
+- **Pods**: 256MB memory request / 512MB limit, 250m CPU request / 500m limit  
+- **HPA Scaling**: 3–50 pods, scaling at 70% CPU threshold  
+- **Istio Service Mesh**: automatic mTLS, observability, traffic management  
+
+---
+
+## Technology Choices & Trade-offs
+
+| Component       | Selected Technology       | Alternatives Considered   | Trade-offs & Rationale |
+|-----------------|---------------------------|---------------------------|-------------------------|
+| Database        | PostgreSQL + TimescaleDB  | MongoDB, DynamoDB         | PostgreSQL offers **ACID compliance**, mature SQL ecosystem, and partitioning. MongoDB is flexible but weaker for joins/transactions. DynamoDB scales automatically but is eventually consistent and costly at scale. |
+| Cache           | Redis Cluster             | Memcached                 | Redis provides **sub-ms latency** and **advanced data structures**. Memcached is faster for pure KV but lacks persistence and clustering. |
+| Message Broker  | Kafka (MSK)               | RabbitMQ, SQS             | Kafka supports **2M+ msgs/sec** with durability and replay. RabbitMQ is easier but peaks ~50k msgs/sec. SQS is fully managed but not streaming. |
+| Container Base  | Alpine Linux              | Distroless                | Alpine is lightweight (<5MB) yet includes debugging tools. Distroless reduces attack surface but harder to debug in production. |
+| Orchestration   | Kubernetes (EKS)          | ECS, Nomad                | Kubernetes is the **industry standard** with broad ecosystem support. ECS is simpler but AWS-specific. Nomad is lightweight but less adopted. |
+| Service Mesh    | Istio                     | Linkerd                   | Istio provides **richer traffic management + observability**, at cost of 1–2ms overhead. Linkerd is faster/simpler but limited features. |
+| Monitoring      | Prometheus + Grafana      | DataDog, CloudWatch       | Prometheus is cost-efficient and customizable. DataDog is feature-rich but ~$750/month more expensive. CloudWatch is tightly integrated but limited. |
 
 ---
 
 ## Containerization
 
-- Multi-stage builds keep images < 20MB  
-- Local development via Docker Compose  
-- Production: ECR storage with vulnerability scanning  
+- **Multi-stage Docker builds** keep production images under 20MB  
+- **Docker Compose** replicates production dependencies (PostgreSQL, Redis, Kafka) in local dev  
+- **Amazon ECR** used for image storage and vulnerability scanning  
 
 ---
 
 ## Deployment (AWS EKS)
 
-- 3 worker nodes (c5.2xlarge) across availability zones  
-- HPA scaling 3–50 pods  
-- Auto-scaling tuned to avoid GC pauses at 80% CPU  
-- Istio service mesh for mTLS and tracing  
+- **Cluster**: 3 nodes (c5.2xlarge) across AZs  
+- **Scaling**: HPA from 3 to 50 pods, tuned for CPU thresholds  
+- **Traffic flow**:  
+```
+
+CloudFront → WAF → ALB → NGINX Ingress → Pods
+
+```
+
+Resilience: Multi-AZ, rolling deployments, liveness/readiness probes.
 
 ---
 
 ## CI/CD Pipeline
 
-- GitHub Actions stages:
-  - Linting & formatting  
-  - Unit & integration tests  
-  - Docker build & push  
-  - Kubernetes deploy via `kubectl`  
+- **GitHub Actions** automates:
+- Linting & formatting  
+- Unit & integration tests  
+- Docker build & push to ECR  
+- Kubernetes deploy (kubectl apply)  
 
 ---
 
 ## Testing Strategy
 
-- **Unit tests** – validation, persistence logic  
-- **Integration tests** – API + DB consistency  
-- **Load tests** – sustained 10k RPS, P99 <500ms  
-- **Future** – Chaos testing, long-running soak tests  
+- **Unit tests**: schema validation, persistence, service layer  
+- **Integration tests**: API + DB interactions  
+- **Performance tests**: sustained 10k RPS, P99 <500ms  
+- **Future**: Chaos engineering, soak testing  
 
 ---
 
 ## Observability
 
-- Prometheus + Grafana – metrics, dashboards  
-- ELK stack – structured logs (7 days hot, 30 days warm, 1y cold)  
-- Jaeger – distributed tracing (1% sampling)  
+- **Prometheus + Grafana** – metrics (scraped every 30s, retained 15 days)  
+- **ELK stack** – JSON structured logs (7d hot, 30d warm, 1y cold)  
+- **Jaeger** – tracing (1% sampling, 7-day retention)  
 
 ---
 
-## Cost Analysis (AWS)
+## Cost Breakdown (AWS)
 
-- Compute (EKS): $1,100/month  
-- Database (RDS): $3,200/month  
-- Cache (Redis): $450/month  
-- Kafka (MSK): $600/month  
-- Monitoring & Storage: $350/month  
+- Compute (EKS): ~$1,100/month  
+- Database (RDS PostgreSQL): ~$3,200/month  
+- Cache (Redis ElastiCache): ~$450/month  
+- Kafka (MSK): ~$600/month  
+- Storage & Monitoring: ~$350/month  
 - **Total**: ~$5,700/month  
 
 ---
 
-## Future Roadmap
+## Roadmap
 
-- Multi-region active-active via Global Accelerator  
-- Aurora Serverless v2 evaluation  
-- Spot instances for cost savings  
-- GraphQL API for more flexible queries  
+- Multi-region active-active setup with AWS Global Accelerator  
+- Database sharding for workloads beyond 10TB  
+- Spot instances to reduce compute costs (up to 70%)  
+- Aurora Serverless v2 evaluation for DB auto-scaling  
+- GraphQL API for more flexible querying  
 
 ---
 
 ## Conclusion
 
-This design deliberately balances **scalability, performance, and cost**. Each choice was made after considering alternatives, highlighting trade-offs, and aligning with the requirements of a microservice expected to handle **billions of records under strict SLAs**.
+This design balances **performance, scalability, and cost**. By leveraging **AWS managed services, Kubernetes, and proven open-source tooling**, the microservice can reliably serve **billions of records** while maintaining strict SLAs and operational efficiency.
