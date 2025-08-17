@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: microservice-prod
+data:
+  LOG_LEVEL: "warn"
+  ENVIRONMENT: "production"
+  PORT: "8080"
+  CACHE_TTL: "300"
+  DB_MAX_CONNECTIONS: "100"
+  DB_POOL_SIZE: "50"
+  ENABLE_PROFILING: "false"
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "true"
+  JAEGER_ENDPOINT: "http://jaeger-collector.monitoring:14268"
+  JAEGER_SAMPLING: "0.01"
+  RATE_LIMIT: "10000"
+  GRACEFUL_SHUTDOWN_TIMEOUT: "30"
